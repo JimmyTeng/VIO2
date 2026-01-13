@@ -1,0 +1,18 @@
+<launch>
+    <!-- Config file path (should contain image_topic and camera_calib_file) -->
+    <arg name="config_path" default="$(find feature_tracker)/../config/euroc/euroc_config.yaml" />
+    
+    <!-- OpenVINS feature publisher node -->
+    <node name="ov_feature_pub" pkg="ov_feature_pub" type="ov_feature_pub" output="screen">
+        <param name="config_file" type="string" value="$(arg config_path)" />
+        
+        <!-- Optional: Override parameters from config file -->
+        <param name="max_features" type="int" value="150" />
+        <param name="fast_threshold" type="int" value="20" />
+        <param name="grid_x" type="int" value="5" />
+        <param name="grid_y" type="int" value="5" />
+        <param name="min_px_dist" type="int" value="10" />
+        <param name="equalize" type="bool" value="false" />
+        <param name="distortion_model" type="string" value="radtan" />
+    </node>
+</launch>

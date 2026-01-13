@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package>
+  <name>ov_feature_pub</name>
+  <version>0.0.0</version>
+  <description>OpenVINS-based feature tracker publisher compatible with VINS-Mono</description>
+
+  <maintainer email="user@example.com">User</maintainer>
+
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>cv_bridge</build_depend>
+  <build_depend>ov_core</build_depend>
+  
+  <run_depend>roscpp</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+  <run_depend>cv_bridge</run_depend>
+  <run_depend>ov_core</run_depend>
+
+  <export>
+  </export>
+</package>
