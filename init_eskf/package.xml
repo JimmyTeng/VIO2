@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package>
+  <name>init_eskf</name>
+  <version>1.0.0</version>
+  <description>Init-ESKF: Error State Kalman Filter for VINS Initialization</description>
+
+  <maintainer email="jimmy@example.com">jimmy</maintainer>
+  <license>GPLv3</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <!-- Build dependencies -->
+  <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>eigen</build_depend>
+  
+  <!-- Runtime dependencies -->
+  <run_depend>roscpp</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+  <run_depend>nav_msgs</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+  <run_depend>tf</run_depend>
+
+  <export>
+  </export>
+</package>

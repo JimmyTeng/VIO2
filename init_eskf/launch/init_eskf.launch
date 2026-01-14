@@ -1,0 +1,74 @@
+<launch>
+    <!-- ================================================================ -->
+    <!-- Init-ESKF 独立模块 Launch 文件                                   -->
+    <!-- ================================================================ -->
+    
+    <arg name="imu_topic" default="/imu0" />
+    <arg name="frame_id" default="world" />
+    <arg name="child_frame_id" default="imu" />
+    
+    <!-- 真值数据配置 -->
+    <arg name="use_gt_height" default="true" />
+    <arg name="gt_type" default="euroc" />
+    <arg name="gt_path" default="/home/jimmy/project/vio_ws/src/data/EuRoC/V1_01_easy/mav0/state_groundtruth_estimate0/data.csv" />
+    <arg name="gt_format" default="timestamp x y z" />
+    <arg name="max_time_diff" default="0.1" />
+    
+    <!-- Init-ESKF 参数 -->
+    <arg name="gravity_mag" default="9.81" />
+    <arg name="acc_noise" default="0.01" />
+    <arg name="gyr_noise" default="0.001" />
+    <arg name="acc_bias_noise" default="1e-5" />
+    <arg name="gyr_bias_noise" default="1e-6" />
+    
+    <!-- 量测参数 -->
+    <arg name="tof_noise" default="0.05" />
+    <arg name="flow_noise" default="0.1" />
+    
+    <!-- 收敛阈值 -->
+    <arg name="convergence_pos_threshold" default="0.1" />
+    <arg name="convergence_vel_threshold" default="0.1" />
+    <arg name="convergence_ori_threshold" default="0.05" />
+    
+    <!-- 光流 -->
+    <arg name="use_optical_flow" default="false" />
+    
+    <!-- Init-ESKF 节点 -->
+    <node name="init_eskf_node" 
+          pkg="init_eskf" 
+          type="init_eskf_node" 
+          output="screen">
+        
+        <!-- 话题配置 -->
+        <param name="imu_topic" type="string" value="$(arg imu_topic)" />
+        <param name="frame_id" type="string" value="$(arg frame_id)" />
+        <param name="child_frame_id" type="string" value="$(arg child_frame_id)" />
+        
+        <!-- 真值数据配置 -->
+        <param name="use_gt_height" type="bool" value="$(arg use_gt_height)" />
+        <param name="gt_type" type="string" value="$(arg gt_type)" />
+        <param name="gt_path" type="string" value="$(arg gt_path)" />
+        <param name="gt_format" type="string" value="$(arg gt_format)" />
+        <param name="max_time_diff" type="double" value="$(arg max_time_diff)" />
+        
+        <!-- Init-ESKF 参数 -->
+        <param name="gravity_mag" type="double" value="$(arg gravity_mag)" />
+        <param name="acc_noise" type="double" value="$(arg acc_noise)" />
+        <param name="gyr_noise" type="double" value="$(arg gyr_noise)" />
+        <param name="acc_bias_noise" type="double" value="$(arg acc_bias_noise)" />
+        <param name="gyr_bias_noise" type="double" value="$(arg gyr_bias_noise)" />
+        
+        <!-- 量测参数 -->
+        <param name="tof_noise" type="double" value="$(arg tof_noise)" />
+        <param name="flow_noise" type="double" value="$(arg flow_noise)" />
+        
+        <!-- 收敛阈值 -->
+        <param name="convergence_pos_threshold" type="double" value="$(arg convergence_pos_threshold)" />
+        <param name="convergence_vel_threshold" type="double" value="$(arg convergence_vel_threshold)" />
+        <param name="convergence_ori_threshold" type="double" value="$(arg convergence_ori_threshold)" />
+        
+        <!-- 光流 -->
+        <param name="use_optical_flow" type="bool" value="$(arg use_optical_flow)" />
+    </node>
+    
+</launch>
