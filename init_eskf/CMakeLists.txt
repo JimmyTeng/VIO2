@@ -6,7 +6,8 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-set(CMAKE_CXX_FLAGS "-std=c++11")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -Wno-unused-parameter")
 
@@ -48,9 +49,7 @@ target_include_directories(init_eskf_utility PUBLIC
 
 # Init-ESKF 核心库
 add_library(init_eskf_lib
-    src/init_eskf.cpp
-    src/gt_reader.cpp
-    src/euroc_parser.cpp
+        src/euroc_parser.cpp
 )
 target_link_libraries(init_eskf_lib 
     init_eskf_utility
@@ -60,14 +59,6 @@ target_include_directories(init_eskf_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# ROS 节点
-add_executable(init_eskf_node 
-    src/init_eskf_node.cpp
-)
-target_link_libraries(init_eskf_node 
-    init_eskf_lib
-    ${catkin_LIBRARIES}
-)
 
 # EuRoC 解析示例
 add_executable(euroc_parser_example 
@@ -91,7 +82,7 @@ target_link_libraries(euroc_test
 ## Install ##
 #############
 
-install(TARGETS init_eskf_node init_eskf_lib init_eskf_utility
+install(TARGETS init_eskf_lib init_eskf_utility
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

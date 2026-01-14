@@ -1,134 +1,122 @@
 /*******************************************************
  * EuRoC 数据集解析器
  * 
- * 专门用于解析 EuRoC 数据集，支持初始点归一化
- * 针对 V1_01_easy 数据集
+ * 简化版本：只保留设置路径和pop数据接口
  *******************************************************/
 
 #include "init_eskf/euroc_parser.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
-#include <iomanip>
-#include <algorithm>
+#include <map>
+#include <vector>
+#include <cmath>
 
 namespace init_eskf {
 
-EuroCParser::EuroCParser() : 
-    initial_timestamp_(0.0),
-    initial_position_(Eigen::Vector3d::Zero()),
-    time_normalized_(false),
-    position_normalized_(false) {
+EuroCParser::EuroCParser() : initialized_(false) {
 }
 
 EuroCParser::~EuroCParser() {
 }
 
-bool EuroCParser::loadDataset(const std::string &dataset_path,
-                              bool normalize_time,
-                              bool normalize_position) {
+bool EuroCParser::setDatasetPath(const std::string &dataset_path) {
     dataset_path_ = dataset_path;
-    time_normalized_ = normalize_time;
-    position_normalized_ = normalize_position;
+    initialized_ = false;
+    
+    // 清空队列
+    while (!data_queue_.empty()) {
+        data_queue_.pop();
+    }
+    
+    // 初始化数据队列
+    return initializeDataQueue();
+}
+
+std::optional<DataItemResult> EuroCParser::popNext() {
+    if (data_queue_.empty()) {
+        return std::nullopt;
+    }
+    
+    DataItem item = data_queue_.top();
+    data_queue_.pop();
+    
+    DataItemResult result;
+    result.type = item.type;
+    
+    switch (item.type) {
+        case DataType::IMAGE:
+            result.data = item.image;
+            break;
+        case DataType::IMU:
+            result.data = item.imu;
+            break;
+        case DataType::GROUND_TRUTH:
+            result.data = item.gt;
+            break;
+    }
+    
+    return result;
+}
+
+bool EuroCParser::initializeDataQueue() {
+    if (dataset_path_.empty()) {
+        std::cerr << "数据集路径未设置" << std::endl;
+        return false;
+    }
     
     // 构建文件路径
-    std::string gt_file = dataset_path + "/mav0/state_groundtruth_estimate0/data.csv";
-    std::string imu_file = dataset_path + "/mav0/imu0/data.csv";
+    std::string cam0_file = dataset_path_ + "/mav0/cam0/data.csv";
+    std::string cam1_file = dataset_path_ + "/mav0/cam1/data.csv";
+    std::string imu_file = dataset_path_ + "/mav0/imu0/data.csv";
+    std::string gt_file = dataset_path_ + "/mav0/state_groundtruth_estimate0/data.csv";
     
-    // 先读取 IMU 数据的第一个时间戳（用于统一归一化基准）
-    double imu_first_timestamp = 0.0;
-    if (normalize_time) {
-        std::ifstream imu_preview(imu_file);
-        if (imu_preview.is_open()) {
-            std::string line;
-            std::getline(imu_preview, line); // 跳过标题行
-            if (std::getline(imu_preview, line) && !line.empty()) {
-                std::istringstream iss(line);
-                std::string field;
-                std::vector<std::string> fields;
-                while (std::getline(iss, field, ',')) {
-                    fields.push_back(field);
-                }
-                if (fields.size() >= 1) {
-                    imu_first_timestamp = std::stod(fields[0]) * 1e-9; // 纳秒转秒
-                }
-            }
-            imu_preview.close();
-        }
+    // 先加载图像数据并合并为双目数据
+    bool image_success = loadStereoImageData(cam0_file, cam1_file);
+    
+    // 加载其他数据
+    bool success = true;
+    
+    if (!image_success) {
+        std::cerr << "警告: 无法加载图像数据" << std::endl;
+        success = false;
     }
     
-    // 加载真值数据（使用 IMU 的第一个时间戳作为归一化基准，确保所有时间戳都是正数）
-    if (!loadGroundTruth(gt_file, normalize_time, normalize_position, imu_first_timestamp)) {
-        std::cerr << "Failed to load ground truth data" << std::endl;
-        return false;
+    if (!loadIMUData(imu_file)) {
+        std::cerr << "警告: 无法加载 IMU 数据" << std::endl;
+        success = false;
     }
     
-    // 加载 IMU 数据（使用自己的第一个时间戳作为归一化基准）
-    if (!loadIMUData(imu_file, normalize_time, imu_first_timestamp)) {
-        std::cerr << "Failed to load IMU data" << std::endl;
-        return false;
+    if (!loadGroundTruthData(gt_file)) {
+        std::cerr << "警告: 无法加载真值数据" << std::endl;
+        success = false;
     }
     
-    std::cerr << "[loadDataset] 数据集加载完成" << std::endl;
-    std::cerr.flush();
-    
-    std::cout << "==========================================" << std::endl;
-    std::cout << "EuRoC Dataset Loaded Successfully" << std::endl;
-    std::cout << "==========================================" << std::endl;
-    std::cout << "Ground truth data points: " << gt_data_.size() << std::endl;
-    std::cout << "IMU data points: " << imu_data_.size() << std::endl;
-    if (normalize_time) {
-        std::cout << "Initial timestamp: " << initial_timestamp_ << " s (normalized to 0)" << std::endl;
+    if (success) {
+        initialized_ = true;
+        std::cout << "数据队列初始化完成，共 " << data_queue_.size() << " 条数据" << std::endl;
     }
-    if (normalize_position) {
-        std::cout << "Initial position: [" 
-                  << initial_position_.x() << ", " 
-                  << initial_position_.y() << ", " 
-                  << initial_position_.z() << "] m (normalized to [0,0,0])" << std::endl;
-    }
-    std::cout << "==========================================" << std::endl;
     
-    return true;
+    return success;
 }
 
-bool EuroCParser::loadGroundTruth(const std::string &csv_file,
-                                  bool normalize_time,
-                                  bool normalize_position,
-                                  double normalize_time_base) {
-    std::cerr << "[loadGroundTruth] 开始加载: " << csv_file << std::endl;
-    std::cerr.flush();
+bool EuroCParser::loadStereoImageData(const std::string &cam0_file, const std::string &cam1_file) {
+    // 使用map存储按时间戳索引的图像数据
+    std::map<int64_t, ImageData> image_map;
     
-    gt_data_.clear();
-    
-    std::ifstream file(csv_file);
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << csv_file << std::endl;
+    // 加载cam0数据
+    std::ifstream file0(cam0_file);
+    if (!file0.is_open()) {
         return false;
     }
     
-    std::cerr << "[loadGroundTruth] 文件打开成功" << std::endl;
-    std::cerr.flush();
-    
     std::string line;
-    // 跳过标题行
-    std::getline(file, line);
-    std::cerr << "[loadGroundTruth] 跳过标题行: " << line << std::endl;
-    std::cerr.flush();
+    std::getline(file0, line);  // 跳过标题行
     
-    // 先读取所有数据到临时容器
-    std::vector<GroundTruthData> temp_data;
-    size_t line_count = 0;
-    
-    while (std::getline(file, line)) {
+    size_t cam0_count = 0;
+    while (std::getline(file0, line)) {
         if (line.empty()) continue;
         
-        ++line_count;
-        if (line_count % 10000 == 0) {
-            std::cerr << "[loadGroundTruth] 已读取 " << line_count << " 行" << std::endl;
-            std::cerr.flush();
-        }
-        
-        GroundTruthData gt;
         std::istringstream iss(line);
         std::string field;
         std::vector<std::string> fields;
@@ -137,339 +125,180 @@ bool EuroCParser::loadGroundTruth(const std::string &csv_file,
             fields.push_back(field);
         }
         
-        // EuRoC 格式: timestamp, px, py, pz, qw, qx, qy, qz, vx, vy, vz, ...
-        if (fields.size() >= 11) {
-            gt.timestamp = std::stod(fields[0]) * 1e-9;  // 纳秒转秒
-            gt.x = std::stod(fields[1]);
-            gt.y = std::stod(fields[2]);
-            gt.z = std::stod(fields[3]);  // 高度
-            gt.qw = std::stod(fields[4]);
-            gt.qx = std::stod(fields[5]);
-            gt.qy = std::stod(fields[6]);
-            gt.qz = std::stod(fields[7]);
-            gt.vx = std::stod(fields[8]);
-            gt.vy = std::stod(fields[9]);
-            gt.vz = std::stod(fields[10]);
+        if (fields.size() >= 2) {
+            int64_t timestamp = std::stoll(fields[0]);  // 纳秒
+            ImageData img;
+            img.timestamp = timestamp;
+            img.filename0 = fields[1];
             
-            temp_data.push_back(gt);
+            image_map[timestamp] = img;
+            cam0_count++;
         }
     }
+    file0.close();
     
-    file.close();
-    
-    std::cerr << "[loadGroundTruth] 文件读取完成，共 " << line_count << " 行，有效数据 " << temp_data.size() << " 条" << std::endl;
-    std::cerr.flush();
-    
-    if (temp_data.empty()) {
-        std::cerr << "未找到有效的 EuRoC 真值数据" << std::endl;
-        return false;
-    }
-    
-    // 获取初始值（第一个数据点）
-    initial_timestamp_ = temp_data[0].timestamp;
-    initial_position_ = Eigen::Vector3d(temp_data[0].x, temp_data[0].y, temp_data[0].z);
-    
-    std::cerr << "[loadGroundTruth] 开始归一化 " << temp_data.size() << " 条数据..." << std::endl;
-    std::cerr.flush();
-    
-    // 归一化所有数据
-    size_t norm_count = 0;
-    for (auto &gt : temp_data) {
-        ++norm_count;
-        if (norm_count % 10000 == 0) {
-            std::cerr << "[loadGroundTruth] 已归一化 " << norm_count << " 条数据" << std::endl;
-            std::cerr.flush();
-        }
-        // 时间戳归一化：使用统一的基准时间戳（通常是 IMU 的第一个时间戳）
-        if (normalize_time) {
-            if (normalize_time_base > 0.0) {
-                gt.timestamp = gt.timestamp - normalize_time_base;
-            } else {
-                gt.timestamp = gt.timestamp - initial_timestamp_;
-            }
-            
-            // 如果归一化后时间戳小于0（即小于IMU的0点时间），直接丢弃
-            if (gt.timestamp < 0.0) {
-                continue;
-            }
-        }
-        
-        // 位置归一化：减去初始位置
-        if (normalize_position) {
-            gt.x = gt.x - initial_position_.x();
-            gt.y = gt.y - initial_position_.y();
-            gt.z = gt.z - initial_position_.z();
-        }
-        
-        // 存储到向量中（按时间戳排序）
-        gt_data_.push_back(gt);
-    }
-    
-    std::cerr << "[loadGroundTruth] 归一化完成，共存储 " << gt_data_.size() << " 条数据" << std::endl;
-    std::cerr.flush();
-    
-    return true;
-}
-
-bool EuroCParser::loadIMUData(const std::string &csv_file,
-                             bool normalize_time,
-                             double normalize_time_base) {
-    std::cerr << "[loadIMUData] 开始加载: " << csv_file << std::endl;
-    std::cerr.flush();
-    
-    imu_data_.clear();
-    
-    std::ifstream file(csv_file);
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << csv_file << std::endl;
-        return false;
-    }
-    
-    std::cerr << "[loadIMUData] 文件打开成功" << std::endl;
-    std::cerr.flush();
-    
-    std::string line;
-    // 跳过标题行
-    std::getline(file, line);
-    std::cerr << "[loadIMUData] 跳过标题行: " << line << std::endl;
-    std::cerr.flush();
-    
-    // 先读取所有数据
-    std::vector<IMUData> temp_data;
-    size_t line_count = 0;
-    
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-        
-        ++line_count;
-        if (line_count % 50000 == 0) {
-            std::cerr << "[loadIMUData] 已读取 " << line_count << " 行" << std::endl;
-            std::cerr.flush();
-        }
-        
-        IMUData imu;
-        std::istringstream iss(line);
-        std::string field;
-        std::vector<std::string> fields;
-        
-        while (std::getline(iss, field, ',')) {
-            fields.push_back(field);
-        }
-        
-        // EuRoC IMU 格式: timestamp, wx, wy, wz, ax, ay, az
-        if (fields.size() >= 7) {
-            imu.timestamp = std::stod(fields[0]) * 1e-9;  // 纳秒转秒
-            imu.gyr.x() = std::stod(fields[1]);
-            imu.gyr.y() = std::stod(fields[2]);
-            imu.gyr.z() = std::stod(fields[3]);
-            imu.acc.x() = std::stod(fields[4]);
-            imu.acc.y() = std::stod(fields[5]);
-            imu.acc.z() = std::stod(fields[6]);
-            
-            temp_data.push_back(imu);
-        }
-    }
-    
-    file.close();
-    
-    std::cerr << "[loadIMUData] 文件读取完成，共 " << line_count << " 行，有效数据 " << temp_data.size() << " 条" << std::endl;
-    std::cerr.flush();
-    
-    if (temp_data.empty()) {
-        std::cerr << "未找到有效的 EuRoC IMU 数据" << std::endl;
-        return false;
-    }
-    
-    // 时间戳归一化基准：优先使用传入的 normalize_time_base（通常是 IMU 的第一个时间戳）
-    // 这样确保所有时间戳都从 0 开始，不会有负数
-    double imu_initial_timestamp = 0.0;
-    if (normalize_time) {
-        if (normalize_time_base > 0.0) {
-            imu_initial_timestamp = normalize_time_base;
-        } else {
-            imu_initial_timestamp = temp_data[0].timestamp;
-        }
+    // 加载cam1数据并合并
+    std::ifstream file1(cam1_file);
+    if (!file1.is_open()) {
+        // 如果cam1不存在，只使用cam0数据
+        std::cout << "警告: 无法打开 cam1 文件，仅使用 cam0 数据" << std::endl;
     } else {
-        imu_initial_timestamp = temp_data[0].timestamp;
+        std::getline(file1, line);  // 跳过标题行
+        
+        size_t cam1_count = 0;
+        size_t stereo_count = 0;
+        const int64_t time_tolerance = 1000000;  // 1ms = 1000000 ns 时间容差
+        
+        while (std::getline(file1, line)) {
+            if (line.empty()) continue;
+            
+            std::istringstream iss(line);
+            std::string field;
+            std::vector<std::string> fields;
+            
+            while (std::getline(iss, field, ',')) {
+                fields.push_back(field);
+            }
+            
+            if (fields.size() >= 2) {
+                int64_t timestamp = std::stoll(fields[0]);  // 纳秒
+                cam1_count++;
+                
+                // 查找匹配的时间戳（允许小的时间差）
+                auto it = image_map.lower_bound(timestamp > time_tolerance ? timestamp - time_tolerance : 0);
+                if (it != image_map.end()) {
+                    int64_t diff = (it->first > timestamp) ? (it->first - timestamp) : (timestamp - it->first);
+                    if (diff < time_tolerance) {
+                        // 找到匹配的时间戳，合并为双目数据
+                        it->second.filename1 = fields[1];
+                        stereo_count++;
+                    } else {
+                        // 没有匹配的cam0数据，创建新的cam1数据项
+                        ImageData img;
+                        img.timestamp = timestamp;
+                        img.filename1 = fields[1];
+                        image_map[timestamp] = img;
+                    }
+                } else {
+                    // 没有匹配的cam0数据，创建新的cam1数据项
+                    ImageData img;
+                    img.timestamp = timestamp;
+                    img.filename1 = fields[1];
+                    image_map[timestamp] = img;
+                }
+            }
+        }
+        file1.close();
+        
+        std::cout << "加载图像数据: cam0=" << cam0_count 
+                  << ", cam1=" << cam1_count 
+                  << ", 双目匹配=" << stereo_count << " 条" << std::endl;
     }
     
-    std::cerr << "[loadIMUData] 开始归一化 " << temp_data.size() << " 条数据..." << std::endl;
-    std::cerr.flush();
+    // 将所有图像数据推入队列
+    for (const auto& pair : image_map) {
+        DataItem item;
+        item.type = DataType::IMAGE;
+        item.timestamp = pair.first;
+        item.image = pair.second;
+        data_queue_.push(item);
+    }
     
-    // 归一化所有数据
-    size_t norm_count = 0;
-    for (auto &imu : temp_data) {
-        ++norm_count;
-        if (norm_count % 50000 == 0) {
-            std::cerr << "[loadIMUData] 已归一化 " << norm_count << " 条数据" << std::endl;
-            std::cerr.flush();
-        }
-        // 时间戳归一化：使用统一的基准时间戳（IMU 的第一个时间戳）
-        if (normalize_time) {
-            imu.timestamp = imu.timestamp - imu_initial_timestamp;
+    return true;
+}
+
+bool EuroCParser::loadIMUData(const std::string &csv_file) {
+    std::ifstream file(csv_file);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    std::string line;
+    // 跳过标题行
+    std::getline(file, line);
+    
+    size_t count = 0;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        
+        std::istringstream iss(line);
+        std::string field;
+        std::vector<std::string> fields;
+        
+        while (std::getline(iss, field, ',')) {
+            fields.push_back(field);
         }
         
-        // 存储到向量中
-        imu_data_.push_back(imu);
-    }
-    
-    std::cerr << "[loadIMUData] 归一化完成，共存储 " << imu_data_.size() << " 条数据" << std::endl;
-    std::cerr.flush();
-    
-    return true;
-}
-
-bool EuroCParser::scanGroundTruth(
-    const std::string &csv_file,
-    const std::function<void(const GroundTruthData&)> &handler) const {
-    std::ifstream file(csv_file);
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << csv_file << std::endl;
-        return false;
-    }
-
-    std::string line;
-    // 跳过标题行
-    std::getline(file, line);
-
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-
-        GroundTruthData gt;
-        std::istringstream iss(line);
-        std::string field;
-        std::vector<std::string> fields;
-
-        while (std::getline(iss, field, ',')) {
-            fields.push_back(field);
-        }
-
-        // EuRoC 格式: timestamp, px, py, pz, qw, qx, qy, qz, vx, vy, vz, ...
-        if (fields.size() >= 11) {
-            gt.timestamp = std::stod(fields[0]) * 1e-9;  // 纳秒转秒
-            gt.x = std::stod(fields[1]);
-            gt.y = std::stod(fields[2]);
-            gt.z = std::stod(fields[3]);
-            gt.qw = std::stod(fields[4]);
-            gt.qx = std::stod(fields[5]);
-            gt.qy = std::stod(fields[6]);
-            gt.qz = std::stod(fields[7]);
-            gt.vx = std::stod(fields[8]);
-            gt.vy = std::stod(fields[9]);
-            gt.vz = std::stod(fields[10]);
-
-            handler(gt);
-        }
-    }
-
-    file.close();
-    return true;
-}
-
-bool EuroCParser::scanIMU(
-    const std::string &csv_file,
-    const std::function<void(const IMUData&)> &handler) const {
-    std::ifstream file(csv_file);
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << csv_file << std::endl;
-        return false;
-    }
-
-    std::string line;
-    // 跳过标题行
-    std::getline(file, line);
-
-    while (std::getline(file, line)) {
-        if (line.empty()) continue;
-
-        IMUData imu;
-        std::istringstream iss(line);
-        std::string field;
-        std::vector<std::string> fields;
-
-        while (std::getline(iss, field, ',')) {
-            fields.push_back(field);
-        }
-
         // EuRoC IMU 格式: timestamp, wx, wy, wz, ax, ay, az
         if (fields.size() >= 7) {
-            imu.timestamp = std::stod(fields[0]) * 1e-9;  // 纳秒转秒
-            imu.gyr.x() = std::stod(fields[1]);
-            imu.gyr.y() = std::stod(fields[2]);
-            imu.gyr.z() = std::stod(fields[3]);
-            imu.acc.x() = std::stod(fields[4]);
-            imu.acc.y() = std::stod(fields[5]);
-            imu.acc.z() = std::stod(fields[6]);
-
-            handler(imu);
+            DataItem item;
+            item.type = DataType::IMU;
+            item.timestamp = std::stoll(fields[0]);  // 纳秒
+            item.imu.timestamp = item.timestamp;
+            item.imu.gyr.x() = std::stod(fields[1]);
+            item.imu.gyr.y() = std::stod(fields[2]);
+            item.imu.gyr.z() = std::stod(fields[3]);
+            item.imu.acc.x() = std::stod(fields[4]);
+            item.imu.acc.y() = std::stod(fields[5]);
+            item.imu.acc.z() = std::stod(fields[6]);
+            
+            data_queue_.push(item);
+            count++;
         }
     }
-
+    
     file.close();
+    std::cout << "加载 IMU 数据: " << count << " 条" << std::endl;
     return true;
 }
 
-bool EuroCParser::getGroundTruthAtTime(double timestamp, GroundTruthData &gt_data,
-                                      double max_time_diff) const {
-    if (gt_data_.empty()) {
+bool EuroCParser::loadGroundTruthData(const std::string &csv_file) {
+    std::ifstream file(csv_file);
+    if (!file.is_open()) {
         return false;
     }
     
-    // 使用二分查找（数据已按时间戳排序）
-    auto it = std::lower_bound(gt_data_.begin(), gt_data_.end(), timestamp,
-        [](const GroundTruthData &gt, double ts) {
-            return gt.timestamp < ts;
-        });
+    std::string line;
+    // 跳过标题行
+    std::getline(file, line);
     
-    double best_diff = max_time_diff;
-    bool found = false;
-    
-    // 检查当前元素
-    if (it != gt_data_.end()) {
-        double diff = std::abs(it->timestamp - timestamp);
-        if (diff < best_diff) {
-            best_diff = diff;
-            gt_data = *it;
-            found = true;
+    size_t count = 0;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        
+        std::istringstream iss(line);
+        std::string field;
+        std::vector<std::string> fields;
+        
+        while (std::getline(iss, field, ',')) {
+            fields.push_back(field);
+        }
+        
+        // EuRoC 格式: timestamp, px, py, pz, qw, qx, qy, qz, vx, vy, vz, ...
+        if (fields.size() >= 11) {
+            DataItem item;
+            item.type = DataType::GROUND_TRUTH;
+            item.timestamp = std::stoll(fields[0]);  // 纳秒
+            item.gt.timestamp = item.timestamp;
+            item.gt.x = std::stod(fields[1]);
+            item.gt.y = std::stod(fields[2]);
+            item.gt.z = std::stod(fields[3]);
+            item.gt.qw = std::stod(fields[4]);
+            item.gt.qx = std::stod(fields[5]);
+            item.gt.qy = std::stod(fields[6]);
+            item.gt.qz = std::stod(fields[7]);
+            item.gt.vx = std::stod(fields[8]);
+            item.gt.vy = std::stod(fields[9]);
+            item.gt.vz = std::stod(fields[10]);
+            
+            data_queue_.push(item);
+            count++;
         }
     }
     
-    // 检查前一个元素（可能更接近）
-    if (it != gt_data_.begin()) {
-        auto prev_it = std::prev(it);
-        double diff = std::abs(prev_it->timestamp - timestamp);
-        if (diff < best_diff) {
-            gt_data = *prev_it;
-            found = true;
-        }
-    }
-    
-    return found;
+    file.close();
+    std::cout << "加载真值数据: " << count << " 条" << std::endl;
+    return true;
 }
-
-bool EuroCParser::getIMUAtTime(double timestamp, IMUData &imu_data,
-                               double max_time_diff) const {
-    if (imu_data_.empty()) {
-        return false;
-    }
-    
-    // 查找最近的数据点
-    double best_diff = max_time_diff;
-    bool found = false;
-    
-    for (const auto &imu : imu_data_) {
-        double diff = std::abs(imu.timestamp - timestamp);
-        if (diff < best_diff) {
-            best_diff = diff;
-            imu_data = imu;
-            found = true;
-        }
-    }
-    
-    return found;
-}
-
-// 注意：getInitialTimestamp, getInitialPosition, getGroundTruthCount, getIMUCount
-// 这些函数在头文件中已定义为内联函数，不需要在这里实现
 
 } // namespace init_eskf
