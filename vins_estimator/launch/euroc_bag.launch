@@ -1,0 +1,96 @@
+<launch>
+    <!-- ================================================================ -->
+    <!-- Euroc Bag 运行 Launch 文件                                      -->
+    <!-- ================================================================ -->
+    <!-- 
+    使用示例:
+    
+    1. 双目+IMU (默认):
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag
+    
+    2. 单目+IMU:
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag config_type:=mono_imu
+    
+    3. 双目 (无IMU):
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag config_type:=stereo
+    
+    4. 启用 loop_fusion:
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag use_loop_fusion:=true
+    
+    5. 不启动 rviz:
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag use_rviz:=false
+    
+    6. 自定义配置文件路径:
+       roslaunch vins euroc_bag.launch bag_path:=/path/to/MH_01_easy.bag config_path:=/path/to/custom_config.yaml
+    
+    7. 如果 bag_path 为空，可以手动在另一个终端运行:
+       rosbag play /path/to/MH_01_easy.bag
+    -->
+    
+    <!-- 参数定义 -->
+    <!-- bag 文件路径 -->
+    <arg name="bag_path" default="" />
+    
+    <!-- 配置文件类型: mono_imu, stereo_imu, stereo -->
+    <arg name="config_type" default="stereo_imu" />
+    
+    <!-- 配置文件路径 -->
+    <arg name="config_path" default="$(find vins)/../config/euroc/euroc_$(arg config_type)_config.yaml" />
+    
+    <!-- 是否启动 loop_fusion -->
+    <arg name="use_loop_fusion" default="false" />
+    
+    <!-- 是否启动 rviz -->
+    <arg name="use_rviz" default="true" />
+    
+    <!-- rosbag 播放参数 -->
+    <arg name="bag_start" default="0" />
+    <arg name="bag_rate" default="1.0" />
+    <arg name="bag_loop" default="false" />
+    
+    <!-- ================================================================ -->
+    <!-- 启动 RViz 可视化 -->
+    <!-- ================================================================ -->
+    <node if="$(arg use_rviz)" 
+          name="rvizvisualisation" 
+          pkg="rviz" 
+          type="rviz" 
+          output="log" 
+          args="-d $(find vins)/../config/vins_rviz_config.rviz" />
+    
+    <!-- ================================================================ -->
+    <!-- 启动 VINS 估计器节点 -->
+    <!-- ================================================================ -->
+    <node name="vins_estimator" 
+          pkg="vins" 
+          type="vins_node" 
+          output="screen" 
+          required="true"
+          args="$(arg config_path)">
+    </node>
+    
+    <!-- ================================================================ -->
+    <!-- 启动 Loop Fusion 节点 (可选) -->
+    <!-- ================================================================ -->
+    <node if="$(arg use_loop_fusion)" 
+          name="loop_fusion" 
+          pkg="loop_fusion" 
+          type="loop_fusion_node" 
+          output="screen"
+          args="$(arg config_path)">
+    </node>
+    
+    <!-- ================================================================ -->
+    <!-- 播放 Euroc Bag 文件 -->
+    <!-- ================================================================ -->
+    <!-- 注意: 如果 bag_path 为空，需要手动运行: rosbag play YOUR_BAG_FILE.bag -->
+    <node if="$(eval bag_path != '')" 
+          name="rosbag_play" 
+          pkg="rosbag" 
+          type="play" 
+          output="screen"
+          args="$(arg bag_path) --start=$(arg bag_start) --rate=$(arg bag_rate)">
+    </node>
+    
+    
+</launch>
