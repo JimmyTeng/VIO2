@@ -230,17 +230,41 @@ bool EuroCParser::loadIMUData(const std::string &csv_file) {
         }
         
         // EuRoC IMU 格式: timestamp, wx, wy, wz, ax, ay, az
+        // 注意：EuRoC原始坐标系是URF (Up-Right-Forward)
+        //   URF: X=Up, Y=Right, Z=Forward
+        // 需要转换为FLU (Forward-Left-Up)坐标系
+        //   FLU: X=Forward, Y=Left, Z=Up
+        // 转换关系：
+        //   FLU_X = URF_Z (Forward)
+        //   FLU_Y = -URF_Y (Left = -Right)
+        //   FLU_Z = URF_X (Up)
         if (fields.size() >= 7) {
             DataItem item;
             item.type = DataType::IMU;
             item.timestamp = std::stoll(fields[0]);  // 纳秒
             item.imu.timestamp = item.timestamp;
-            item.imu.gyr.x() = std::stod(fields[1]);
-            item.imu.gyr.y() = std::stod(fields[2]);
-            item.imu.gyr.z() = std::stod(fields[3]);
-            item.imu.acc.x() = std::stod(fields[4]);
-            item.imu.acc.y() = std::stod(fields[5]);
-            item.imu.acc.z() = std::stod(fields[6]);
+            
+            // 读取原始URF坐标系数据
+            double urf_wx = std::stod(fields[1]);  // URF X (Up)
+            double urf_wy = std::stod(fields[2]);  // URF Y (Right)
+            double urf_wz = std::stod(fields[3]);  // URF Z (Forward)
+            double urf_ax = std::stod(fields[4]);  // URF X (Up)
+            double urf_ay = std::stod(fields[5]);  // URF Y (Right)
+            double urf_az = std::stod(fields[6]);  // URF Z (Forward)
+            
+            // 转换为FLU坐标系
+            // 角速度转换
+            item.imu.gyr.x() = urf_wz;   // FLU X = URF Z (Forward)
+            item.imu.gyr.y() = -urf_wy;  // FLU Y = -URF Y (Left = -Right)
+            item.imu.gyr.z() = urf_wx;   // FLU Z = URF X (Up)
+            
+            // 加速度转换
+            item.imu.acc.x() = urf_az;   // FLU X = URF Z (Forward)
+            item.imu.acc.y() = -urf_ay;  // FLU Y = -URF Y (Left = -Right)
+            item.imu.acc.z() = urf_ax;   // FLU Z = URF X (Up)
+            
+            // 验证：转换后，静止平放时加速度应该接近 [0, 0, 9.81]
+            // 如果原始数据是 [9.81, 0, 0] (URF)，转换后应该是 [0, 0, 9.81] (FLU)
             
             data_queue_.push(item);
             count++;
@@ -275,21 +299,29 @@ bool EuroCParser::loadGroundTruthData(const std::string &csv_file) {
         }
         
         // EuRoC 格式: timestamp, px, py, pz, qw, qx, qy, qz, vx, vy, vz, ...
+        // 注意：真值数据使用FLU (Forward-Left-Up)坐标系（World坐标系）
+        //   FLU: X=Forward, Y=Left, Z=Up
+        // 真值数据已经是FLU坐标系，无需转换
+        // 位置(x,y,z)和速度(vx,vy,vz)都在World坐标系中，使用FLU约定
+        // 四元数(qw,qx,qy,qz)表示从World到Body的旋转
         if (fields.size() >= 11) {
             DataItem item;
             item.type = DataType::GROUND_TRUTH;
             item.timestamp = std::stoll(fields[0]);  // 纳秒
             item.gt.timestamp = item.timestamp;
-            item.gt.x = std::stod(fields[1]);
-            item.gt.y = std::stod(fields[2]);
-            item.gt.z = std::stod(fields[3]);
+            // 位置：World坐标系，FLU约定（无需转换）
+            item.gt.x = std::stod(fields[1]);  // FLU X (Forward)
+            item.gt.y = std::stod(fields[2]);  // FLU Y (Left)
+            item.gt.z = std::stod(fields[3]);  // FLU Z (Up)
+            // 四元数：从World到Body的旋转（Body坐标系是FLU）
             item.gt.qw = std::stod(fields[4]);
             item.gt.qx = std::stod(fields[5]);
             item.gt.qy = std::stod(fields[6]);
             item.gt.qz = std::stod(fields[7]);
-            item.gt.vx = std::stod(fields[8]);
-            item.gt.vy = std::stod(fields[9]);
-            item.gt.vz = std::stod(fields[10]);
+            // 速度：World坐标系，FLU约定（无需转换）
+            item.gt.vx = std::stod(fields[8]);  // FLU X (Forward)
+            item.gt.vy = std::stod(fields[9]);  // FLU Y (Left)
+            item.gt.vz = std::stod(fields[10]); // FLU Z (Up)
             
             data_queue_.push(item);
             count++;

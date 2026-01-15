@@ -49,6 +49,10 @@ int main(int argc, char** argv) {
   bool has_first_gt = false;
   Eigen::Vector3d first_gt_position;
   Eigen::Quaterniond first_gt_orientation;
+  
+  // 调试：打印前几帧原始IMU数据
+  bool debug_imu_printed = false;
+  const int debug_imu_frames = 5;
 
   std::cout << std::fixed << std::setprecision(6);
   std::cout << "========================================\n";
@@ -90,6 +94,26 @@ int main(int argc, char** argv) {
     if (first_imu_timestamp != 0 && first_ground_truth_timestamp != 0) {
       if (data->type == init_eskf::DataType::IMU) {
         imu_count++;
+        
+        // 调试：打印前几帧转换后的IMU数据（已转换为FLU坐标系）
+        if (!debug_imu_printed && imu_count <= debug_imu_frames) {
+          double acc_norm = data->getIMU().acc.norm();
+          std::cout << "[调试] IMU数据 #" << imu_count << " (FLU坐标系): "
+                    << "acc=[" << data->getIMU().acc(0) << ", " 
+                    << data->getIMU().acc(1) << ", " 
+                    << data->getIMU().acc(2) << "] m/s², "
+                    << "模长=" << acc_norm << " m/s², "
+                    << "gyr=[" << data->getIMU().gyr(0) << ", " 
+                    << data->getIMU().gyr(1) << ", " 
+                    << data->getIMU().gyr(2) << "] rad/s\n";
+          if (imu_count == debug_imu_frames) {
+            debug_imu_printed = true;
+            std::cout << "[调试] 前" << debug_imu_frames 
+                      << "帧IMU数据打印完成（已转换为FLU坐标系）\n";
+            std::cout << "[调试] 注意：静止平放时，加速度应接近 [0, 0, 9.81] m/s²\n";
+          }
+        }
+        
         if (eskf.getGravityAlignmentStatus() !=
             init_eskf::GravityAlignmentStatus::COMPLETED) {
           // 使用逐个添加数据的方式，自动开始和完成初始化
@@ -220,6 +244,17 @@ int main(int argc, char** argv) {
                 // 真值姿态的欧拉角
                 Eigen::Vector3d gt_euler = gt_q.toRotationMatrix().eulerAngles(2, 1, 0);
                 
+                // ESKF姿态的欧拉角
+                Eigen::Vector3d eskf_euler = state.q.toRotationMatrix().eulerAngles(2, 1, 0);
+                
+                // 计算各轴的角度误差（分别计算roll, pitch, yaw误差）
+                Eigen::Vector3d error_euler = eskf_euler - gt_euler;
+                // 将角度误差归一化到[-180, 180]度
+                for (int i = 0; i < 3; i++) {
+                  while (error_euler(i) > M_PI) error_euler(i) -= 2 * M_PI;
+                  while (error_euler(i) < -M_PI) error_euler(i) += 2 * M_PI;
+                }
+                
                 std::cout << "\n--- 与真值对比（已转换到0点坐标系）---\n";
                 std::cout << "真值位置 (m): [" << latest_gt.x << ", " 
                           << latest_gt.y << ", " << latest_gt.z << "]\n";
@@ -233,10 +268,16 @@ int main(int argc, char** argv) {
                           << vel_error(1) << ", " << vel_error(2) << "]\n";
                 std::cout << "速度误差模长 (m/s): " << vel_error_norm << "\n";
                 
+                std::cout << "ESKF姿态 (deg): roll=" << eskf_euler(2) * 180.0 / M_PI 
+                          << ", pitch=" << eskf_euler(1) * 180.0 / M_PI 
+                          << ", yaw=" << eskf_euler(0) * 180.0 / M_PI << "\n";
                 std::cout << "真值姿态 (deg): roll=" << gt_euler(2) * 180.0 / M_PI 
                           << ", pitch=" << gt_euler(1) * 180.0 / M_PI 
                           << ", yaw=" << gt_euler(0) * 180.0 / M_PI << "\n";
-                std::cout << "姿态误差 (deg): " << angle_error_deg << "\n";
+                std::cout << "姿态误差分量 (deg): roll=" << error_euler(2) * 180.0 / M_PI 
+                          << ", pitch=" << error_euler(1) * 180.0 / M_PI 
+                          << ", yaw=" << error_euler(0) * 180.0 / M_PI << "\n";
+                std::cout << "姿态总误差 (deg): " << angle_error_deg << "\n";
                 std::cout << "时间差: " << time_diff_sec * 1000.0 << " ms\n";
               } else {
                 std::cout << "\n--- 真值数据过期 (时间差: " 
@@ -253,48 +294,51 @@ int main(int argc, char** argv) {
         }
       } else if (data->type == init_eskf::DataType::GROUND_TRUTH) {
         // 记录第一个真值数据点作为参考坐标系
+        // 注意：真值数据使用FLU坐标系（World坐标系），与IMU数据（Body坐标系，已转换为FLU）一致
         if (!has_first_gt) {
           first_gt = data->getGroundTruth();
           first_gt_position = Eigen::Vector3d(first_gt.x, first_gt.y, first_gt.z);
           first_gt_orientation = Eigen::Quaterniond(
               first_gt.qw, first_gt.qx, first_gt.qy, first_gt.qz);
           has_first_gt = true;
-          std::cout << "第一个真值点（原始）: 位置=[" << first_gt.x << ", " 
-                    << first_gt.y << ", " << first_gt.z << "]\n";
-          std::cout << "坐标系转换：所有后续真值将相对于此点归一化到(0,0,0)\n";
+          
+          // 打印第一个真值点的姿态信息
+          Eigen::Vector3d first_euler = first_gt_orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+          std::cout << "\n[真值坐标系] 第一个真值点（原始，FLU坐标系）: 位置=[" 
+                    << first_gt.x << ", " << first_gt.y << ", " << first_gt.z << "]\n";
+          std::cout << "[真值坐标系] 第一个真值点姿态 (deg): roll=" 
+                    << first_euler(2) * 180.0 / M_PI 
+                    << ", pitch=" << first_euler(1) * 180.0 / M_PI 
+                    << ", yaw=" << first_euler(0) * 180.0 / M_PI << "\n";
+          std::cout << "[真值坐标系] 注意：只归一化位置到(0,0,0)，姿态保持绝对姿态\n";
+          std::cout << "[真值坐标系] 原因：真值姿态已经和重力对齐，不应强制归一化\n";
+          std::cout << "[坐标系确认] 真值数据：FLU坐标系（World），IMU数据：FLU坐标系（Body，已从URF转换）\n";
         }
         
         // 将真值转换到0点坐标系
         init_eskf::GroundTruthData gt_normalized = data->getGroundTruth();
         
-        // 位置转换：减去第一个位置
+        // 位置转换：减去第一个位置（归一化位置）
         gt_normalized.x -= first_gt_position(0);
         gt_normalized.y -= first_gt_position(1);
         gt_normalized.z -= first_gt_position(2);
         
-        // 姿态转换：相对于第一个姿态
-        Eigen::Quaterniond current_q(gt_normalized.qw, gt_normalized.qx, 
-                                      gt_normalized.qy, gt_normalized.qz);
-        Eigen::Quaterniond q_normalized = first_gt_orientation.inverse() * current_q;
-        q_normalized.normalize();
-        gt_normalized.qw = q_normalized.w();
-        gt_normalized.qx = q_normalized.x();
-        gt_normalized.qy = q_normalized.y();
-        gt_normalized.qz = q_normalized.z();
+        // 姿态转换：保持绝对姿态，不归一化
+        // 原因：真值姿态已经和重力对齐（Vicon坐标系），如果归一化会引入人为误差
+        // 只旋转速度向量到新的位置坐标系（如果需要）
+        // 注意：姿态保持原样，不进行转换
+        // gt_normalized的四元数保持不变
         
-        // 速度保持不变（速度是相对量，不需要转换）
-        // 但需要旋转到新的坐标系
-        Eigen::Vector3d vel_original(gt_normalized.vx, gt_normalized.vy, gt_normalized.vz);
-        Eigen::Vector3d vel_normalized = first_gt_orientation.inverse() * vel_original;
-        gt_normalized.vx = vel_normalized(0);
-        gt_normalized.vy = vel_normalized(1);
-        gt_normalized.vz = vel_normalized(2);
+        // 速度：在真值坐标系中，速度是相对于世界坐标系的，不需要转换
+        // 但如果位置归一化了，速度也应该在同一个坐标系下
+        // 由于我们只归一化了位置，速度保持不变（已经是世界坐标系下的速度）
         
-        // 保存转换后的真值数据（所有打印将使用此转换后的值）
+        // 保存转换后的真值数据（位置归一化，姿态保持绝对）
         latest_gt = gt_normalized;
         has_gt = true;
         
-        // updateTOF 使用转换后的z坐标
+        // updateTOF 使用转换后的z坐标（位置已归一化）
+        // 注意：真值的z坐标对应高度，应该使用z而不是x
         eskf.updateTOF(data->getTimestamp(), gt_normalized.z, 0.05);
       }
     }
@@ -379,6 +423,14 @@ int main(int argc, char** argv) {
       double angle_error_deg = angle_error_rad * 180.0 / M_PI;
       
       Eigen::Vector3d gt_euler = gt_q.toRotationMatrix().eulerAngles(2, 1, 0);
+      Eigen::Vector3d eskf_euler = state.q.toRotationMatrix().eulerAngles(2, 1, 0);
+      
+      // 计算各轴的角度误差
+      Eigen::Vector3d error_euler = eskf_euler - gt_euler;
+      for (int i = 0; i < 3; i++) {
+        while (error_euler(i) > M_PI) error_euler(i) -= 2 * M_PI;
+        while (error_euler(i) < -M_PI) error_euler(i) += 2 * M_PI;
+      }
       
       std::cout << "\n--- 最终状态与真值对比（已转换到0点坐标系）---\n";
       std::cout << "真值位置 (m): [" << latest_gt.x << ", " 
@@ -393,10 +445,34 @@ int main(int argc, char** argv) {
                 << vel_error(1) << ", " << vel_error(2) << "]\n";
       std::cout << "速度误差模长 (m/s): " << vel_error_norm << "\n";
       
+      std::cout << "ESKF姿态 (deg): roll=" << eskf_euler(2) * 180.0 / M_PI 
+                << ", pitch=" << eskf_euler(1) * 180.0 / M_PI 
+                << ", yaw=" << eskf_euler(0) * 180.0 / M_PI << "\n";
       std::cout << "真值姿态 (deg): roll=" << gt_euler(2) * 180.0 / M_PI 
                 << ", pitch=" << gt_euler(1) * 180.0 / M_PI 
                 << ", yaw=" << gt_euler(0) * 180.0 / M_PI << "\n";
-      std::cout << "姿态误差 (deg): " << angle_error_deg << "\n";
+      std::cout << "姿态误差分量 (deg): roll=" << error_euler(2) * 180.0 / M_PI 
+                << ", pitch=" << error_euler(1) * 180.0 / M_PI 
+                << ", yaw=" << error_euler(0) * 180.0 / M_PI << "\n";
+      std::cout << "姿态总误差 (deg): " << angle_error_deg << "\n";
+      
+      // 分析角度误差原因
+      std::cout << "\n--- 角度误差分析 ---\n";
+      if (std::abs(error_euler(2)) * 180.0 / M_PI > 5.0) {
+        std::cout << "[警告] Roll误差较大: " << error_euler(2) * 180.0 / M_PI 
+                  << "度（重力对齐应该能准确估计roll）\n";
+      }
+      if (std::abs(error_euler(1)) * 180.0 / M_PI > 5.0) {
+        std::cout << "[警告] Pitch误差较大: " << error_euler(1) * 180.0 / M_PI 
+                  << "度（重力对齐应该能准确估计pitch）\n";
+      }
+      if (std::abs(error_euler(0)) * 180.0 / M_PI > 10.0) {
+        std::cout << "[注意] Yaw误差较大: " << error_euler(0) * 180.0 / M_PI 
+                  << "度（这是正常的，重力对齐无法确定yaw角）\n";
+        std::cout << "       原因：重力对齐只对齐了重力方向（roll和pitch），\n";
+        std::cout << "             无法确定绕重力轴的旋转（yaw角）\n";
+        std::cout << "       解决方案：需要磁力计或其他传感器来确定yaw角\n";
+      }
     }
   } else {
     // 重力对齐失败，仍然打印当前状态（可能不准确）

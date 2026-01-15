@@ -248,7 +248,10 @@ class InitESKF {
       Eigen::Vector3d acc_unbiased = acc - x_nominal_.ba;
       Eigen::Vector3d gyr_unbiased = gyr - x_nominal_.bg;
 
-      // 重力向量（在全局坐标系中，z 轴向上约定）
+      // 重力向量（在全局坐标系中）
+      // EuRoC使用ENU系（East-North-Up），重力向下，所以重力向量应该是 [0, 0, -gravity_mag_]
+      // 但加速度计在静止时读到的重力是向上的（支撑力），所以这里使用 [0, 0, gravity_mag_]
+      // 注意：这取决于加速度计的定义，需要根据实际读数调整
       Eigen::Vector3d gravity_global(0, 0, gravity_mag_);
       // 将重力转换到 IMU 坐标系
       Eigen::Vector3d gravity_imu = x_nominal_.q.inverse() * gravity_global;
@@ -943,13 +946,32 @@ class InitESKF {
     }
 
     // 使用平均加速度方向来对齐重力
-    // 重力在全局坐标系中指向 [0, 0, -gravity_mag_]（z轴向下）
-    // 或者 [0, 0, gravity_mag_]（z轴向上），取决于约定
-    // 这里使用 z 轴向上约定：重力 = [0, 0, gravity_mag_]
+    // 关键问题：需要确定加速度计读数的符号约定
+    // EuRoC IMU坐标系：X=Forward, Y=Left, Z=Up (FLU)
+    // 当无人机静止平放时：
+    //   - 如果加速度计读到 [0, 0, +9.81]：说明Z轴向上时读数为正（支撑力方向）
+    //   - 如果加速度计读到 [0, 0, -9.81]：说明Z轴向上时读数为负（重力方向）
+    // 
+    // 重力对齐逻辑：
+    //   1. 计算平均加速度方向（机体系中的重力方向）
+    //   2. 期望重力在全局系的Z轴（向上为正或向下为负，取决于约定）
+    //   3. 计算旋转使机体系的重力方向对齐到全局系Z轴
+    //
+    // 当前实现假设：静止时加速度计读到 [0, 0, +9.81]，期望重力 = [0, 0, +9.81]
+    // 如果实际读数是 [0, 0, -9.81]，需要改为 gravity_global(0, 0, -gravity_mag_)
     Eigen::Vector3d gravity_global(0, 0, gravity_mag_);
 
     // 归一化平均加速度（在机体系中的重力方向）
     Eigen::Vector3d gravity_body = acc_mean.normalized();
+    
+    // 调试信息：打印重力对齐的关键数据
+    std::cout << "[重力对齐调试] 平均加速度模长: " << acc_norm << " m/s²\n";
+    std::cout << "[重力对齐调试] 平均加速度方向（机体系）: [" 
+              << gravity_body(0) << ", " << gravity_body(1) << ", " 
+              << gravity_body(2) << "]\n";
+    std::cout << "[重力对齐调试] 期望重力方向（全局系）: [" 
+              << gravity_global(0) << ", " << gravity_global(1) << ", " 
+              << gravity_global(2) << "]\n";
 
     // 使用 FromTwoVectors 计算从机体系到全局系的旋转
     // 这会将机体系中的重力方向对齐到全局系的 z 轴
@@ -960,6 +982,13 @@ class InitESKF {
     // 所以需要取逆
     x_nominal_.q = q_body_to_global.inverse();
     x_nominal_.q.normalize();
+    
+    // 调试信息：打印对齐后的姿态
+    Eigen::Vector3d init_euler = x_nominal_.q.toRotationMatrix().eulerAngles(2, 1, 0);
+    std::cout << "[重力对齐调试] 对齐后姿态 (deg): roll=" 
+              << init_euler(2) * 180.0 / M_PI 
+              << ", pitch=" << init_euler(1) * 180.0 / M_PI 
+              << ", yaw=" << init_euler(0) * 180.0 / M_PI << "\n";
 
     // 初始化偏置（使用过滤后的样本）
     if (!filtered_gyr_samples.empty()) {
@@ -974,18 +1003,35 @@ class InitESKF {
     }
 
     // 加速度计偏置 = 平均加速度 - 旋转后的重力
+    // 在静止状态下，加速度计读数 = 重力 + 偏置
+    // 所以：偏置 = 读数 - 重力
+    // 重力在IMU坐标系中的表示
     Eigen::Vector3d gravity_imu = x_nominal_.q.inverse() * gravity_global;
     x_nominal_.ba = acc_mean - gravity_imu;
+    
+    // 调试信息：打印偏置计算过程
+    std::cout << "[重力对齐调试] 重力在IMU坐标系中: [" 
+              << gravity_imu(0) << ", " << gravity_imu(1) << ", " 
+              << gravity_imu(2) << "] m/s²\n";
+    std::cout << "[重力对齐调试] 计算出的加速度计偏置: [" 
+              << x_nominal_.ba(0) << ", " << x_nominal_.ba(1) << ", " 
+              << x_nominal_.ba(2) << "] m/s²\n";
+    std::cout << "[重力对齐调试] 偏置模长: " << x_nominal_.ba.norm() << " m/s²\n";
 
     // 检查偏置的合理性（正常偏置应该在 ±0.5 m/s^2 以内）
     double ba_norm = x_nominal_.ba.norm();
     if (ba_norm > 2.0) {
       // 偏置异常大，可能是姿态估计有误，使用更保守的初始化
       // 假设偏置为 0，让滤波器在后续过程中慢慢估计
+      std::cerr << "[initializeWithGravityAlignment] 错误: 计算出的加速度计偏置过大 ("
+                << ba_norm << " m/s²)\n";
+      std::cerr << "       这表明姿态估计可能有严重错误！\n";
+      std::cerr << "       可能原因：\n";
+      std::cerr << "       1. IMU坐标系定义错误（轴顺序或方向）\n";
+      std::cerr << "       2. 重力向量定义错误（应该是[0,0,9.81]还是[0,0,-9.81]？）\n";
+      std::cerr << "       3. 加速度计数据解析错误\n";
+      std::cerr << "       将偏置重置为0，但姿态错误仍会导致滤波器发散\n";
       x_nominal_.ba = Eigen::Vector3d::Zero();
-      std::cerr << "[initializeWithGravityAlignment] Warning: Computed acc "
-                   "bias too large ("
-                << ba_norm << " m/s^2), resetting to zero" << std::endl;
     }
 
     // 检查陀螺仪偏置的合理性（正常偏置应该在 ±0.1 rad/s 以内）
